@@ -1,0 +1,265 @@
+// Vercel / Netlify にそのままデプロイ可能
+// npm install → npm run dev
+// 公開する場合は Vercel に import してください
+
+export default function KickCommentViewer() {
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white p-6">
+      <KickViewer />
+    </div>
+  );
+}
+
+import React, { useEffect, useRef, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { MessageCircle, Wifi, WifiOff } from "lucide-react";
+
+function KickViewer() {
+  const [channel, setChannel] = useState("trainwreckstv");
+  const [messages, setMessages] = useState([]);
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const wsRef = useRef(null);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const addMessage = (username, text, color = "text-white") => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Date.now() + Math.random(),
+        username,
+        text,
+        color,
+        time: new Date().toLocaleTimeString(),
+      },
+    ]);
+  };
+
+  const disconnect = () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setConnected(false);
+  };
+
+  const connect = async () => {
+    try {
+      setLoading(true);
+      disconnect();
+      setMessages([]);
+
+      addMessage("SYSTEM", `チャンネル取得中: ${channel}`, "text-green-400");
+
+      // Kick channel info API
+      const res = await fetch(`https://kick.com/api/v2/channels/${channel}`);
+      const data = await res.json();
+
+      if (!data?.chatroom?.id) {
+        addMessage("SYSTEM", "チャットルーム取得失敗", "text-red-400");
+        setLoading(false);
+        return;
+      }
+
+      const chatroomId = data.chatroom.id;
+
+      addMessage(
+        "SYSTEM",
+        `接続成功: Chatroom ${chatroomId}`,
+        "text-green-400"
+      );
+
+      // Kick realtime endpoint
+      const ws = new WebSocket("wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false");
+
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+
+        addMessage("SYSTEM", "WebSocket connected", "text-green-400");
+
+        const subscribePayload = {
+          event: "pusher:subscribe",
+          data: {
+            auth: "",
+            channel: `chatrooms.${chatroomId}.v2`,
+          },
+        };
+
+        ws.send(JSON.stringify(subscribePayload));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+
+          if (payload.event === "App\\Events\\ChatMessageEvent") {
+            const chatData = JSON.parse(payload.data);
+
+            const username = chatData.sender?.username || "Unknown";
+            const message = chatData.content || "";
+
+            addMessage(username, message);
+          }
+
+          if (payload.event === "pusher_internal:subscription_succeeded") {
+            addMessage("SYSTEM", "チャット購読開始", "text-blue-400");
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        addMessage("SYSTEM", "切断されました", "text-yellow-400");
+      };
+
+      ws.onerror = () => {
+        addMessage("SYSTEM", "WebSocket error", "text-red-400");
+      };
+    } catch (err) {
+      console.error(err);
+      addMessage("SYSTEM", "接続失敗", "text-red-400");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-4xl font-bold flex items-center gap-3">
+            <MessageCircle className="w-10 h-10" />
+            Kick コメビュ
+          </h1>
+          <p className="text-zinc-400 mt-2">
+            Kick配信のコメントをリアルタイム表示
+          </p>
+        </div>
+
+        <Badge
+          className={`px-4 py-2 text-sm ${
+            connected ? "bg-green-600" : "bg-zinc-700"
+          }`}
+        >
+          {connected ? (
+            <span className="flex items-center gap-2">
+              <Wifi className="w-4 h-4" /> Connected
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
+              <WifiOff className="w-4 h-4" /> Offline
+            </span>
+          )}
+        </Badge>
+      </div>
+
+      <Card className="bg-zinc-900 border-zinc-800 text-white rounded-3xl shadow-2xl">
+        <CardHeader>
+          <CardTitle>接続設定</CardTitle>
+        </CardHeader>
+
+        <CardContent>
+          <div className="flex gap-3 flex-wrap">
+            <Input
+              value={channel}
+              onChange={(e) => setChannel(e.target.value)}
+              placeholder="Kick channel name"
+              className="bg-zinc-800 border-zinc-700"
+            />
+
+            <Button
+              onClick={connect}
+              disabled={loading}
+              className="rounded-2xl"
+            >
+              {loading ? "接続中..." : "接続"}
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={disconnect}
+              className="rounded-2xl bg-zinc-800 border-zinc-700"
+            >
+              切断
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-zinc-900 border-zinc-800 text-white rounded-3xl shadow-2xl overflow-hidden">
+        <CardHeader>
+          <CardTitle>コメント一覧</CardTitle>
+        </CardHeader>
+
+        <CardContent>
+          <div
+            ref={scrollRef}
+            className="h-[600px] overflow-y-auto rounded-2xl bg-black p-4 space-y-2"
+          >
+            {messages.length === 0 && (
+              <div className="text-zinc-500 text-center py-20">
+                コメント待機中...
+              </div>
+            )}
+
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className="animate-in fade-in slide-in-from-bottom-2 duration-200"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="text-xs text-zinc-500 min-w-[70px]">
+                    {msg.time}
+                  </span>
+
+                  <span className={`font-bold ${msg.color}`}>
+                    {msg.username}
+                  </span>
+
+                  <span className="break-words text-zinc-100 flex-1">
+                    {msg.text}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-zinc-900 border-zinc-800 text-white rounded-3xl">
+        <CardHeader>
+          <CardTitle>使い方</CardTitle>
+        </CardHeader>
+
+        <CardContent>
+          <div className="space-y-3 text-zinc-300">
+            <p>1. Kickのチャンネル名を入力</p>
+            <p>2. 「接続」を押す</p>
+            <p>3. リアルタイムでコメント表示</p>
+            <p>4. OBSのブラウザソースにも利用可能</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
